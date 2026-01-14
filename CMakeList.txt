@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.12)
+project(quant_backtest_system)
+
+# C++ 标准
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 源文件
+set(SOURCES
+    src/main.cpp
+    src/backtest/engine.cpp
+    src/strategies/ma_strategy.cpp
+    src/data/loader.cpp
+)
+
+# 头文件目录
+set(INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/incl
+ude
+)
+
+# 创建可执行文件
+add_executable(quant_engine ${SOURCES})
+# 设置头文件路径
+target_include_directories(quant_engine PRIVATE ${INCLUDE_DIRS})
