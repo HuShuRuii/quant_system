@@ -3,7 +3,7 @@
 #include<string>
 #include <future>
 #include <unordered_map>
-
+#include<mutex>
 struct Tick {
     std::string timetag = "";
     float lastPrice = 0.0f;
@@ -36,53 +36,35 @@ struct Bar {
     float preClose = 0.0f;
     int suspendFlag = 0;
 };
+// 需求是什么
 
-enum class OrderStatus {
-    Pending,
-    Submitted,
-    Cancelled,
-    Filled
-};
-
-struct Order {
-    int orderId = 0;
-    std::string symbol;
-    int volume = 0;
-    float price = 0.0f;
-    OrderStatus status = OrderStatus::Pending;
-};
-
-class Position {
+template<typename T, size_t N>
+class CircularBuffer {
 public:
-    std::future<int> submitOrderAsync(const std::string& symbol, int volume, float price) {
-        return std::async(std::launch::async, [this, symbol, volume, price]() {
-            int id = ++orderCounter;
-            Order order{id, symbol, volume, price, OrderStatus::Submitted};
-            orders[id] = order;
-            return id;
-        });
+    CircularBuffer() : head_(0), size_(0) {}
+
+    void push(const T& value) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        buffer_[head_] = value;
+        head_ = (head_ + 1) % N;
+        if (size_ < N) ++size_;
     }
 
-    std::future<bool> cancelOrderAsync(int orderId) {
-        return std::async(std::launch::async, [this, orderId]() {
-            auto it = orders.find(orderId);
-            if (it != orders.end() && it->second.status == OrderStatus::Submitted) {
-                it->second.status = OrderStatus::Cancelled;
-                return true;
-            }
-            return false;
-        });
-    }
+    size_t size() const { 
+        std::lock_guard<std::mutex> lock(mtx_);
+        return size_; }
+    bool full() const { 
+        std::lock_guard<std::mutex> lock(mtx_);
+        return size_ == N; }
 
-    OrderStatus queryOrderStatus(int orderId) {
-        auto it = orders.find(orderId);
-        if (it != orders.end()) {
-            return it->second.status;
-        }
-        return OrderStatus::Pending;
+    const T& at(size_t i) const {
+        std::lock_guard<std::mutex> lock(mtx_);
+        return buffer_[(head_ + N - size_ + i) % N];
     }
 
 private:
-    std::unordered_map<int, Order> orders;
-    int orderCounter = 0;
+    T buffer_[N];
+    size_t head_;
+    size_t size_;
+    mutable std::mutex mtx_;
 };

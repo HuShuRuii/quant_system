@@ -54,12 +54,3 @@ void orderStatusCallback(const OrderManager::Order& order) {
             << std::endl;
 }
 
-int main() {
-  OrderManager manager(orderStatusCallback);
-
-  manager.placeOrder(1, 100.5, 10);  // 下单
-  manager.cancelOrder(1);            // 撤单
-  manager.cancelOrder(2);            // 测试撤单不存在的订单
-
-  return 0;
-}
