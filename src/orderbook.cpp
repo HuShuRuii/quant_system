@@ -1,137 +1,132 @@
-
+#include <algorithm>
 #include "orderbook.h"
 #include "type_declare.h"
 // we consider if there are order matched they are completed immediately and yield deal to the deal vector
 void OrderBook::addOrder(const Order& order) {
     std::lock_guard<std::mutex> lock(mtx_);
-    if (order.side == Orderside::Buy) {
-        // first check if there is any matching sell order
-        for (auto it=sell_orders_.begin(); it!=sell_orders_.end();) {
-            if (it->price <= order.price) {
-                // match found
-                int deal_quantity = std::min(order.quantity, it->quantity);
-                deals_.emplace_back(order.orderId, it->orderId, it->price, deal_quantity, std::chrono::system_clock::now());
-                // update quantities
-                Order updated_sell_order = *it;
-                updated_sell_order.quantity -= deal_quantity;
-                Order updated_buy_order = order;
-                updated_buy_order.quantity -= deal_quantity;
-                // remove the original order and insert another one if its not fully matched
-                order_map_sell_.erase(it->orderId);
-                sell_orders_.erase(it);
-                if (updated_sell_order.quantity == 0){
-                    auto insert_it = sell_orders_.insert(updated_sell_order);
-                    order_map_sell_[updated_sell_order.orderId] = insert_it.first;
-                    return ; // buy order is fully filled
-                }
-                // if buy order is fully filled, return
-                if (updated_buy_order.quantity != 0) {
-                    ++it; // continue to check next sell order
-                } else {
-                    return; // buy order is fully filled
-                }
-            } 
-            else {
-                break; // no more matches possible
+    if (order.side == Orderside::Bid) {
+        int remain_qty = order.quantity;
+        auto it = ask_orders_.begin();
+        while (it != ask_orders_.end() && it->price <= order.price && remain_qty > 0) {
+            int deal_qty = std::min(remain_qty, it->quantity);
+            deals_.emplace_back(order.orderId, it->orderId, it->price, deal_qty, std::chrono::system_clock::now());
+            remain_qty -= deal_qty;
+
+            // 更新 ask_levels
+            ask_levels_[it->price] -= deal_qty;
+            if (ask_levels_[it->price] <= 0) ask_levels_.erase(it->price);
+
+            // 更新撮合订单
+            if (it->quantity > deal_qty) {
+                Order updated_ask = *it;
+                updated_ask.quantity -= deal_qty;
+                order_map_ask_.erase(it->orderId);
+                it = ask_orders_.erase(it);
+                auto insert_it = ask_orders_.insert(updated_ask);
+                order_map_ask_[updated_ask.orderId] = insert_it.first;
+            } else {
+                order_map_ask_.erase(it->orderId);
+                it = ask_orders_.erase(it);
             }
         }
-        auto it=buy_orders_.insert(order);
-        order_map_buy_[order.orderId]=it.first;
-    } else {
-        // first check if there is any matching buy order
-        for (auto it=buy_orders_.begin(); it!=buy_orders_.end();) {
-            if (it->price >= order.price) {
-                // match found
-                int deal_quantity = std::min(order.quantity, it->quantity);
-                deals_.emplace_back(it->orderId, order.orderId, it->price, deal_quantity, std::chrono::system_clock::now());
-                // update quantities
-                Order updated_buy_order = *it;
-                updated_buy_order.quantity -= deal_quantity;
-                Order updated_sell_order = order;
-                updated_sell_order.quantity -= deal_quantity;
-                // remove the original order and insert another one if its not fully matched
-                order_map_buy_.erase(it->orderId);
-                buy_orders_.erase(it);
-                if (updated_buy_order.quantity == 0){
-                    auto insert_it = buy_orders_.insert(updated_buy_order);
-                    order_map_buy_[updated_buy_order.orderId] = insert_it.first;
-                    return ; // sell order is fully filled
-                }
-                // if sell order is fully filled, return
-                if (updated_sell_order.quantity != 0) {
-                    ++it; // continue to check next buy order
-                } else {
-                    return; // sell order is fully filled
-                }
-            } 
-            else {
-                break; // no more matches possible
-            }
-        }
-        auto it=sell_orders_.insert(order);
-        order_map_sell_[order.orderId]=it.first;
-    }
-}
-
-bool OrderBook::removeOrder(int orderId) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto it_buy = order_map_buy_.find(orderId);
-    if (it_buy != order_map_buy_.end()) {
-        buy_orders_.erase(it_buy->second);
-        order_map_buy_.erase(it_buy);
-        return;
-    }
-    auto it_sell = order_map_sell_.find(orderId);
-    if (it_sell != order_map_sell_.end()) {
-        sell_orders_.erase(it_sell->second);
-        order_map_sell_.erase(it_sell);
-        return;
-    }
-}
-
-long long OrderBook::get_volume_at_price(double price, Orderside side) const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    long long total_volume = 0;
-    if (side == Orderside::Buy) {
-        Order key;
-        key.price = price;
-        auto it = buy_orders_.lower_bound(key);
-        while (it != buy_orders_.end() && it->price == price) {
-            total_volume += it->quantity;
-            ++it;
+        if (remain_qty > 0) {
+            Order new_bid = order;
+            new_bid.quantity = remain_qty;
+            auto insert_it = bid_orders_.insert(new_bid);
+            order_map_bid_[new_bid.orderId] = insert_it.first;
+            bid_levels_[new_bid.price] += remain_qty;
         }
     }
     else {
-        Order key;
-        key.price = price;
-        auto it = sell_orders_.lower_bound(key);
-        while (it != buy_orders_.end() && it->price == price) {
-            total_volume += it->quantity;
-            ++it;
+        int remain_qty = order.quantity;
+        auto it = bid_orders_.begin();
+        while (it != bid_orders_.end() && it->price >= order.price && remain_qty > 0) {
+            int deal_qty = std::min(remain_qty, it->quantity);
+            deals_.emplace_back(it->orderId, order.orderId, it->price, deal_qty, std::chrono::system_clock::now());
+            remain_qty -= deal_qty;
+
+            // 更新 bid_levels
+            bid_levels_[it->price] -= deal_qty;
+            if (bid_levels_[it->price] <= 0) bid_levels_.erase(it->price);
+
+            // 更新撮合订单
+            if (it->quantity > deal_qty) {
+                Order updated_bid = *it;
+                updated_bid.quantity -= deal_qty;
+                order_map_bid_.erase(it->orderId);
+                it = bid_orders_.erase(it);
+                auto insert_it = bid_orders_.insert(updated_bid);
+                order_map_bid_[updated_bid.orderId] = insert_it.first;
+            } else {
+                order_map_bid_.erase(it->orderId);
+                it = bid_orders_.erase(it);
+            }
+        }
+        if (remain_qty > 0) {
+            Order new_ask = order;
+            new_ask.quantity = remain_qty;
+            auto insert_it = ask_orders_.insert(new_ask);
+            order_map_ask_[new_ask.orderId] = insert_it.first;
+            ask_levels_[new_ask.price] += remain_qty;
         }
     }
-    return total_volume;
 }
 
-std::vector<std::pair<float,long long>> OrderBook::get_bid(int depth=5) const {
+double OrderBook::getSpread() const{
     std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<std::pair<float,long long>> snapshot;
-    auto it = ob.buy_orders_.begin();
-    while (it != ob.buy_orders_.end() && snapshot.size() < depth) {
-        float price = it->price;
-        long long volume = ob.get_volume_at_price(price, Orderside::Buy);
-        snapshot.emplace_back(price, volume);
-        ++it;
+    if (bid_orders_.empty() || ask_orders_.empty()){
+        return 0.0;
+    }
+    double best_bid = bid_orders_.begin()->price;
+    double best_ask = ask_orders_.begin()->price;
+    return best_ask - best_bid;
+}; // get current spread
+
+long long OrderBook::at(double price) const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (bid_levels_.find(price) != bid_levels_.end()) {
+        return bid_levels_.at(price);
+    }
+    else if (ask_levels_.find(price) != ask_levels_.end()) {
+        return ask_levels_.at(price);
+    }
+    else {
+        return 0;
+    }
+}
+
+bool OrderBook::cancelOrder(int orderId) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    auto it_bid = order_map_bid_.find(orderId);
+    if (it_bid != order_map_bid_.end()) {
+        bid_levels_[ it_bid->second->price ] -= it_bid->second->quantity;
+        bid_orders_.erase(it_bid->second);
+        order_map_bid_.erase(it_bid);
+        return;
+    }
+    auto it_ask = order_map_ask_.find(orderId);
+    if (it_ask != order_map_ask_.end()) {
+        ask_levels_[ it_ask->second->price ] -= it_ask->second->quantity;
+        ask_orders_.erase(it_ask->second);
+        order_map_ask_.erase(it_ask);
+        return;
+    }
+}
+
+std::vector<std::pair<double,long long>> OrderBook::printBid(int depth=5) const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    std::vector<std::pair<double,long long>> snapshot;
+    for (auto it = bid_levels_.begin(); it != bid_levels_.end() && depth > 0; ++it, --depth) {
+        snapshot.emplace_back(it->first, it->second);
+    }
+    return snapshot;
+}
+std::vector<std::pair<double,long long>> OrderBook::printAsk(int depth=5) const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    std::vector<std::pair<double,long long>> snapshot;
+    for (auto it = ask_levels_.begin(); it != ask_levels_.end() && depth > 0; ++it, --depth) {
+        snapshot.emplace_back(it->first, it->second);
     }
     return snapshot;
 }
 
-std::vector<std::pair<float,long long>> OrderBook::get_ask(int depth=5) const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<std::pair<float,long long>> snapshot;
-    for (const auto& order : sell_orders_) {
-        snapshot.emplace_back(order.price, order.quantity);
-        if (snapshot.size() >= static_cast<size_t>(depth)) break;
-    }
-    return snapshot;
-}
